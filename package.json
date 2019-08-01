@@ -1,0 +1,38 @@
+{
+  "name": "ibtparse",
+  "version": "0.0.2",
+  "description": "",
+  "main": "build/app.js",
+  "scripts": {
+    "build": "npm-run-all clean lint compile",
+    "clean": "rimraf build",
+    "compile": "tsc",
+    "lint": "tslint  --project tsconfig.json -t codeFrame"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rcmx/ibtparse.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/rcmx/ibtparse/issues"
+  },
+  "homepage": "https://github.com/rcmx/ibtparse#readme",
+  "dependencies": {
+    "commander": "^2.20.0",
+    "date-fns": "^1.30.1",
+    "yamljs": "^0.3.0"
+  },
+  "devDependencies": {
+    "@types/commander": "^2.12.2",
+    "@types/node": "^12.6.8",
+    "@types/typescript": "^2.0.0",
+    "@types/yamljs": "^0.2.30",
+    "npm-run-all": "^4.1.5",
+    "rimraf": "^2.6.3",
+    "ts-node": "^8.3.0",
+    "tslint": "^5.18.0",
+    "typescript": "^3.5.3"
+  }
+}
