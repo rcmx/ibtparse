@@ -1,7 +1,7 @@
 {
-    "editor.minimap.enabled": false,
-    "files.autoSave": "onFocusChange",
-    "editor.tabSize": 2,
-    "editor.insertSpaces": false,
-    "typescript.updateImportsOnFileMove.enabled": "always"
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "editor.formatOnSave": true
 }

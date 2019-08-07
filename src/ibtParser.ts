@@ -1,268 +1,288 @@
-import * as fs from 'fs';
-import * as irSdk from './irSdk';
-import * as datefns from 'date-fns';
-import * as YAML from 'yamljs';
-
+import { Buffer } from 'buffer'
+import * as fs from 'fs'
+import * as irSdk from './irSdk'
+import * as datefns from 'date-fns'
+import * as YAML from 'yamljs'
 
 export class IbtParser {
-	private fileName: string;
-	private data: any;
+  private fileName: string
+  private rawBuffer: Buffer | null = null
+  private sdkHeader: irSdk.irsdk_header | null = null
+  private varHeaders: irSdk.irsdk_varHeader[] | null = null
 
-	constructor(fileName: string) {
-		this.fileName = fileName;
-	}
+  constructor(fileName: string) {
+    this.fileName = fileName
+  }
 
-	public async parse(): Promise<any> {
-		const rawBuffer = await this.readFile();
-		const sdkHeader = this.parseHeader(rawBuffer.buffer, 0);
-		const diskSubHeader = this.parseDiskSubHeader(rawBuffer.buffer, irSdk.sizeof_irsdk_header);
-		const sessionInfo = this.parseSessionInfo(rawBuffer.buffer, sdkHeader.sessionInfoOffset, sdkHeader.sessionInfoLen);
+  public async parse(): Promise<void> {
+    this.rawBuffer = await this.readFile()
+    this.sdkHeader = this.parseHeader(this.rawBuffer.buffer, 0)
 
-		const varHeaders = this.parseVarHeaders(rawBuffer.buffer, sdkHeader.varHeaderOffset, sdkHeader.numVars);
+    //		const diskSubHeader = this.parseDiskSubHeader(this.rawBuffer.buffer, irSdk.sizeof_irsdk_header);
 
-		// const vars = this.parseAllVars(fileData.buffer, varHeaders, latestVarBuf, sdkHeader.numVars);
+    this.varHeaders = this.parseVarHeaders(
+      this.rawBuffer.buffer,
+      this.sdkHeader.varHeaderOffset,
+      this.sdkHeader.numVars
+    )
 
-		this.data = {
-			rawBuffer,
-			sdkHeader,
-			diskSubHeader,
-			sessionInfo,
-			varHeaders
-			// ,			vars
-		};
-	}
+    //		const latestVarBuf = this.getLatestVarBuf(this.sdkHeader.varBuf);
 
-	public getVarValue(name: string): any {
-		const latestVarBuf = this.data.sdkHeader.varBuf.reduce((latest: any, curr: any) => curr.tickCount > latest.tickCount ? curr : latest, this.data.sdkHeader.varBuf[0]);
+    // NOTE: in ibt file, VarBuf's keep getting appended to the file, so we have to keep reading until EOF
+    //		const varLines = this.parseAllVarBufLines(this.rawBuffer.buffer, varHeaders, this.sdkHeader.numVars, latestVarBuf, this.sdkHeader.bufLen);
+  }
 
-		for (let i = 0; i < this.data.sdkHeader.numVars; i++) {
-			if (this.data.varHeaders[i].name.toLowerCase() === name.toLowerCase()) {
-				const varHeader = this.data.varHeaders[i];
-				const varOffset = latestVarBuf.bufOffset + varHeader.offset;
+  public getSessionInfo(): any {
+    const sessionInfo = this.parseSessionInfo(
+      this.rawBuffer.buffer,
+      this.sdkHeader.sessionInfoOffset,
+      this.sdkHeader.sessionInfoLen
+    )
+    return sessionInfo
+  }
 
-				const varData = this.parseVar(this.data.rawBuffer.buffer, varOffset, varHeader.type);
-				return varData;
-			}
-		}
-		return -1;
-	}
+  public getVarValue(name: string): any {
+    const latestVarBuf = this.getLatestVarBuf(this.sdkHeader.varBuf)
 
-	// private getVarIdx(data: any, name:string): number {
-	// 	for (let i = 0; i < data.sdkHeader.numVars; i++) {
-	// 		if (data.varHeaders[i].name.toLowerCase() === name.toLowerCase()) {
-	// 			return i;
-	// 		}
-	// 	}
-	// 	return -1;
-	// }
+    for (let i = 0; i < this.sdkHeader.numVars; i++) {
+      if (this.varHeaders[i].name.toLowerCase() === name.toLowerCase()) {
+        const varHeader = this.varHeaders[i]
+        const varOffset = latestVarBuf.bufOffset + varHeader.offset
 
-	// offset is the number of bytes from the start of the ArrayBuffer where this header starts
-	private parseHeader(buff: ArrayBuffer, offset: number): irSdk.irsdk_header {
-		// note: for the offset, we INCREMENT first, THEN read
+        const varData = this.parseVar(this.rawBuffer.buffer, varOffset, varHeader.type)
+        return varData
+      }
+    }
+    return -1
+  }
 
-		const header: any = {
-			ver: this.getInt32(buff, offset + 0),
-			status: this.getInt32(buff, offset + 4),
-			tickRate: this.getInt32(buff, offset + 8),
+  private getLatestVarBuf = (varBufs: irSdk.irsdk_varBuf[]) =>
+    varBufs.reduce((latest: any, curr: any) => (curr.tickCount > latest.tickCount ? curr : latest), varBufs[0])
 
-			sessionInfoUpdate: this.getInt32(buff, offset + 12),
-			sessionInfoLen: this.getInt32(buff, offset + 16),
-			sessionInfoOffset: this.getInt32(buff, offset + 20),
+  // offset is the number of bytes from the start of the ArrayBuffer where this header starts
+  private parseHeader(buff: ArrayBuffer, offset: number): irSdk.irsdk_header {
+    // note: for the offset, we INCREMENT first, THEN read
 
-			numVars: this.getInt32(buff, offset + 24),
-			varHeaderOffset: this.getInt32(buff, offset + 28),
+    const header: any = {
+      ver: this.getInt32(buff, offset + 0),
+      status: this.getInt32(buff, offset + 4),
+      tickRate: this.getInt32(buff, offset + 8),
 
-			numBuf: this.getInt32(buff, offset + 32),
-			bufLen: this.getInt32(buff, offset + 36),
-			pad1_0: 'pad' + (offset + 40),
-			pad1_1: 'pad' + (offset + 44)
-		};
+      sessionInfoUpdate: this.getInt32(buff, offset + 12),
+      sessionInfoLen: this.getInt32(buff, offset + 16),
+      sessionInfoOffset: this.getInt32(buff, offset + 20),
 
-		// create varBuff array and fill it in
-		const varBuffOffset = offset + 48;
+      numVars: this.getInt32(buff, offset + 24),
+      varHeaderOffset: this.getInt32(buff, offset + 28),
 
-		header.varBuf = new Array<irSdk.irsdk_varBuf>(header.numBuf);
-		for (let i = 0; i < header.numBuf; i++) {
-			header.varBuf[i] = this.getVarBuf(buff, varBuffOffset + (i * irSdk.sizeOf_irsdk_varBuf));
-		}
+      numBuf: this.getInt32(buff, offset + 32),
+      bufLen: this.getInt32(buff, offset + 36),
+      pad1_0: 'pad' + (offset + 40),
+      pad1_1: 'pad' + (offset + 44),
+    }
 
-		return header;
-	}
+    // create varBuff array and fill it in
+    const varBuffOffset = offset + 48
 
-	// offset is the number of bytes from the start of the ArrayBuffer where this header starts
-	private parseDiskSubHeader(buff: ArrayBuffer, offset: number): irSdk.irsdk_diskSubHeader {
+    header.varBuf = new Array<irSdk.irsdk_varBuf>(header.numBuf)
+    for (let i = 0; i < header.numBuf; i++) {
+      header.varBuf[i] = this.getVarBuf(buff, varBuffOffset + i * irSdk.sizeOf_irsdk_varBuf)
+    }
 
-		// time_t is 64bits and secs since epoc - convert to number, then ms and then Date
-		const sessionStartDate = new Date(Number(this.getInt64(buff, offset + 0)) * 1000);
+    return header
+  }
 
-		const diskSubHeader: irSdk.irsdk_diskSubHeader = {
-			sessionStartDate,
-			sessionStartTime: datefns.addSeconds(sessionStartDate, Number(this.getDouble(buff, offset + 8))),
-			sessionEndTime: datefns.addSeconds(sessionStartDate, Number(this.getDouble(buff, offset + 16))),
-			sessionLapCount: this.getInt32(buff, offset + 24),
-			sessionRecordCount: this.getInt32(buff, offset + 28)
-		};
-		return diskSubHeader;
-	}
+  // offset is the number of bytes from the start of the ArrayBuffer where this header starts
+  private parseDiskSubHeader(buff: ArrayBuffer, offset: number): irSdk.irsdk_diskSubHeader {
+    // time_t is 64bits and secs since epoc - convert to number, then ms and then Date
+    const sessionStartDate = new Date(Number(this.getInt64(buff, offset + 0)) * 1000)
 
-	private parseSessionInfo(buff: ArrayBuffer, offset: number, len: number): object {
-		const yamlString = Buffer.from(buff, offset, len).toString();
-		const sessInfo = YAML.parse(yamlString);
+    const diskSubHeader: irSdk.irsdk_diskSubHeader = {
+      sessionStartDate,
+      sessionStartTime: datefns.addSeconds(sessionStartDate, Number(this.getDouble(buff, offset + 8))),
+      sessionEndTime: datefns.addSeconds(sessionStartDate, Number(this.getDouble(buff, offset + 16))),
+      sessionLapCount: this.getInt32(buff, offset + 24),
+      sessionRecordCount: this.getInt32(buff, offset + 28),
+    }
+    return diskSubHeader
+  }
 
-		return sessInfo;
-	}
+  private parseSessionInfo(buff: ArrayBuffer, offset: number, len: number): object {
+    const yamlString = Buffer.from(buff, offset, len).toString()
+    const sessInfo = YAML.parse(yamlString)
 
-	private parseVarHeaders(buff: ArrayBuffer, offset: number, numVars: number): irSdk.irsdk_varHeader[] {
-		const varHeaders: irSdk.irsdk_varHeader[] = [];
+    return sessInfo
+  }
 
-		for (let i = 0; i < numVars; i++) {
-			const varHeader: any = {
-				//				type: irSdk.irsdk_VarType[this.getInt(buff, offset += 0)],
-				type: this.getInt32(buff, offset + 0) as irSdk.irsdk_VarType,
-				offset: this.getInt32(buff, offset + 4),
-				count: this.getInt32(buff, offset + 8),
+  private parseVarHeaders(buff: ArrayBuffer, offset: number, numVars: number): irSdk.irsdk_varHeader[] {
+    const varHeaders: irSdk.irsdk_varHeader[] = []
 
-				countAsTime: this.getBoolean(buff, offset + 12),
-				pad: 'abc', 	// + (offset + 4),			// 3 bytes (16 byte align)
+    for (let i = 0; i < numVars; i++) {
+      const varHeader: any = {
+        //				type: irSdk.irsdk_VarType[this.getInt(buff, offset += 0)],
+        type: this.getInt32(buff, offset + 0) as irSdk.irsdk_VarType,
+        offset: this.getInt32(buff, offset + 4),
+        count: this.getInt32(buff, offset + 8),
 
-				name: this.getString(buff, (offset + 16), irSdk.IRSDK_MAX_STRING),
-				desc: this.getString(buff, (offset + 16 + irSdk.IRSDK_MAX_STRING), irSdk.IRSDK_MAX_DESC),
-				unit: this.getString(buff, (offset + 16 + irSdk.IRSDK_MAX_STRING + irSdk.IRSDK_MAX_DESC), irSdk.IRSDK_MAX_STRING)
-			};
-			varHeaders.push(varHeader);
+        countAsTime: this.getBoolean(buff, offset + 12),
+        pad: 'abc', // + (offset + 4),			// 3 bytes (16 byte align)
 
-			// bump offset to start of next varBuf
-			offset += irSdk.sizeOf_irsdk_varHeader;
-		}
+        name: this.getString(buff, offset + 16, irSdk.IRSDK_MAX_STRING),
+        desc: this.getString(buff, offset + 16 + irSdk.IRSDK_MAX_STRING, irSdk.IRSDK_MAX_DESC),
+        unit: this.getString(buff, offset + 16 + irSdk.IRSDK_MAX_STRING + irSdk.IRSDK_MAX_DESC, irSdk.IRSDK_MAX_STRING),
+      }
+      varHeaders.push(varHeader)
 
-		return varHeaders;
-	}
+      // bump offset to start of next varBuf
+      offset += irSdk.sizeOf_irsdk_varHeader
+    }
 
-	private parseAllVars(buff: ArrayBuffer, varHeaders: irSdk.irsdk_varHeader[], varBuf: irSdk.irsdk_varBuf, numVars: number): any {
-		const vars: any[] = [];
+    return varHeaders
+  }
 
-		for (let i = 0; i < numVars; i++) {
-			const varHeader = varHeaders[i];
-			const varOffset = varBuf.bufOffset + varHeader.offset;
+  // NOTE: in ibt files, VarBuf lines keep getting appended to the file, so we have to keep reading until EOF
+  private parseAllVarBufLines(
+    buff: ArrayBuffer,
+    varHeaders: irSdk.irsdk_varHeader[],
+    numVars: number,
+    varBuf: irSdk.irsdk_varBuf,
+    lineBuffLen: number
+  ): any {
+    // const startTime = Date.now();
 
-			const varData = this.parseVar(buff, varOffset, varHeader.type);
-			vars.push(varData);
+    const varLines: any[] = []
 
-			// // debug
-			// (varHeader as any).debugValue = varData;
-			// console.log(`${i} - ${JSON.stringify(varHeader)}`);
-		}
+    const eof = buff.byteLength
 
-		return vars;
-	}
+    let varLineOffset = varBuf.bufOffset
+    let lineNum = 0
+    while (varLineOffset < eof) {
+      const vars = this.parseSingleVarBufLine(buff, varLineOffset, varHeaders, numVars)
+      varLines.push(vars)
 
-	private parseVar(buff: ArrayBuffer, offset: number, type: irSdk.irsdk_VarType): any {
-		let dataValue;
+      varLineOffset += lineBuffLen
+      lineNum++
+    }
 
-		switch (type) {
-			case irSdk.irsdk_VarType.irsdk_char:			// 1 byte
-				dataValue = this.getChar(buff, offset);
-				break;
-			case irSdk.irsdk_VarType.irsdk_bool:			// 1 byte
-				dataValue = this.getBoolean(buff, offset);
-				break;
+    // const endTime = Date.now();
+    // console.log(`parseAllVarBufLines() elapsed ${endTime-startTime}ms.    perLineBuf: ${(endTime-startTime)/lineNum}`);
+    return varLines
+  }
 
-			case irSdk.irsdk_VarType.irsdk_int:				// 4 bytes
-				dataValue = this.getInt32(buff, offset);
-				break;
-			case irSdk.irsdk_VarType.irsdk_bitField:	// 4 bytes
-				dataValue = this.getInt32(buff, offset);
-				break;
-			case irSdk.irsdk_VarType.irsdk_float:			// 4 bytes
-				dataValue = this.getFloat(buff, offset);
-				break;
+  private parseSingleVarBufLine(
+    buff: ArrayBuffer,
+    varLineOffset: number,
+    varHeaders: irSdk.irsdk_varHeader[],
+    numVars: number
+  ): any[] {
+    const vars: any[] = []
 
-			case irSdk.irsdk_VarType.irsdk_double:		// 8 bytes
-				dataValue = this.getDouble(buff, offset);
-				break;
-			default:
-				throw new Error(`unknown varHeader type: ${type}`);
-		}
+    for (let i = 0; i < numVars; i++) {
+      const varHeader = varHeaders[i]
+      const varOffset = varLineOffset + varHeader.offset
 
-		return dataValue;
-	}
+      const varData = this.parseVar(buff, varOffset, varHeader.type)
+      vars.push(varData)
+    }
+    return vars
+  }
 
-	private getVarBuf(buff: ArrayBuffer, offset: number): irSdk.irsdk_varBuf {
-		const varBuf = {
-			tickCount: this.getInt32(buff, offset + 0),
-			bufOffset: this.getInt32(buff, offset + 4),
-			pad: 'abcd'	// (16 byte align)
-		};
+  private parseVar(buff: ArrayBuffer, offset: number, type: irSdk.irsdk_VarType): any {
+    let dataValue
 
-		return varBuf;
-	}
+    switch (type) {
+      case irSdk.irsdk_VarType.irsdk_char: // 1 byte
+        dataValue = this.getChar(buff, offset)
+        break
+      case irSdk.irsdk_VarType.irsdk_bool: // 1 byte
+        dataValue = this.getBoolean(buff, offset)
+        break
 
-	// countAsTime: this.getBooleanAsChar(buff, offset + 12),
-	private getBoolean(buffer: ArrayBuffer, offset: number): boolean {
-		const bool = this.getChar(buffer, offset) !== 0;
-		return bool;
-	}
+      case irSdk.irsdk_VarType.irsdk_int: // 4 bytes
+        dataValue = this.getInt32(buff, offset)
+        break
+      case irSdk.irsdk_VarType.irsdk_bitField: // 4 bytes
+        dataValue = this.getInt32(buff, offset)
+        break
+      case irSdk.irsdk_VarType.irsdk_float: // 4 bytes
+        dataValue = this.getFloat(buff, offset)
+        break
 
-	private getChar(buffer: ArrayBuffer, offset: number): number {
-		const array = new Uint8Array(buffer, offset, 1);
-		return array[0];
-	}
+      case irSdk.irsdk_VarType.irsdk_double: // 8 bytes
+        dataValue = this.getDouble(buff, offset)
+        break
+      default:
+        throw new Error(`unknown varHeader type: ${type}`)
+    }
 
-	private getInt32(buffer: ArrayBuffer, offset: number): number {
-		const dv = new DataView(buffer, offset, Int32Array.BYTES_PER_ELEMENT);
-		const val = dv.getInt32(0, true);
-		return val;
-	}
+    return dataValue
+  }
 
-	// private getBits32(buffer: ArrayBuffer, offset: number): Buffer {
-	// 	const bytes = Buffer.from(buffer, offset, Uint32Array.BYTES_PER_ELEMENT);
-	// 	return bytes;
-	// 	// const dv = new DataView(buffer, offset, Uint8Array.BYTES_PER_ELEMENT);
-	// 	// const val = dv.getInt32(0, true);
-	// 	// return val;
-	// }
+  private getVarBuf(buff: ArrayBuffer, offset: number): irSdk.irsdk_varBuf {
+    const varBuf = {
+      tickCount: this.getInt32(buff, offset + 0),
+      bufOffset: this.getInt32(buff, offset + 4),
+      pad: 'abcd', // (16 byte align)
+    }
 
-	private getInt64(buffer: ArrayBuffer, offset: number): BigInt {
-		const array = new BigInt64Array(buffer, offset, 1);
-		return array[0];
-	}
+    return varBuf
+  }
 
-	private getFloat(buffer: ArrayBuffer, offset: number): number {
-		const dv2 = new DataView(buffer, offset, Float32Array.BYTES_PER_ELEMENT);
-		const val2 = dv2.getFloat32(0, true)
-		return val2;
-	}
+  // countAsTime: this.getBooleanAsChar(buff, offset + 12),
+  private getBoolean(buffer: ArrayBuffer, offset: number): boolean {
+    const bool = this.getChar(buffer, offset) !== 0
+    return bool
+  }
 
-	private getDouble(buffer: ArrayBuffer, offset: number): number {
-		const dv = new DataView(buffer, offset, Float64Array.BYTES_PER_ELEMENT);
-		const val = dv.getFloat64(0, true);
-		return val;
-	}
+  private getChar(buffer: ArrayBuffer, offset: number): number {
+    const array = new Uint8Array(buffer, offset, 1)
+    return array[0]
+  }
 
-	private getString(buff: ArrayBuffer, offset: number, maxChars: number): string {
-		const rawBytes = Buffer.from(buff, offset, maxChars);
-		// find null terminator
-		for (let i = 0; i < maxChars; i++) {
-			if (rawBytes[i] === 0) {
-				const str = rawBytes.slice(0, i).toString();
-				return str;
-			}
-		}
-		throw new Error('unable to find null terminator');
-	}
+  private getInt32(buffer: ArrayBuffer, offset: number): number {
+    const dv = new DataView(buffer, offset, Int32Array.BYTES_PER_ELEMENT)
+    const val = dv.getInt32(0, true)
+    return val
+  }
 
-	private async readFile(): Promise<Buffer> {
-		return new Promise((resolve, reject) => {
-			fs.readFile(this.fileName, (err, data) => {
-				if (err) {
-					reject(err);
-				}
+  private getInt64(buffer: ArrayBuffer, offset: number): BigInt {
+    const array = new BigInt64Array(buffer, offset, 1)
+    return array[0]
+  }
 
-				resolve(data);
-			});
-		});
+  private getFloat(buffer: ArrayBuffer, offset: number): number {
+    const dv2 = new DataView(buffer, offset, Float32Array.BYTES_PER_ELEMENT)
+    const val2 = dv2.getFloat32(0, true)
+    return val2
+  }
 
-	}
+  private getDouble(buffer: ArrayBuffer, offset: number): number {
+    const dv = new DataView(buffer, offset, Float64Array.BYTES_PER_ELEMENT)
+    const val = dv.getFloat64(0, true)
+    return val
+  }
+
+  private getString(buff: ArrayBuffer, offset: number, maxChars: number): string {
+    const rawBytes = Buffer.from(buff, offset, maxChars)
+    // find null terminator
+    for (let i = 0; i < maxChars; i++) {
+      if (rawBytes[i] === 0) {
+        const str = rawBytes.slice(0, i).toString()
+        return str
+      }
+    }
+    throw new Error('unable to find null terminator')
+  }
+
+  private async readFile(): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      fs.readFile(this.fileName, (err, data) => {
+        if (err) {
+          reject(err)
+        }
+
+        resolve(data)
+      })
+    })
+  }
 }
-
-
